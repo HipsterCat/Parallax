@@ -1,5 +1,8 @@
 import SwiftUI
 
+
+// STEAL yes please seems very accurate
+
 /// Icon-only circular action button over hero/detail artwork (Favorite, Watched, …).
 /// iPhone/iPad: INTERACTIVE LIQUID GLASS disc + white glyph (owner directive 2026-08-10,
 /// amending the flat-disc rule for the hero action row — the glass rim keeps the control

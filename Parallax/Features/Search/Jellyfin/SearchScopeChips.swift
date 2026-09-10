@@ -1,6 +1,8 @@
 import SwiftUI
 import ParallaxCore
 
+// STEAL 
+
 /// One entry in the app's search-scope vocabulary.
 ///
 /// `allOptions` is the SINGLE list of scopes-and-their-words, feeding both the iOS/iPadOS

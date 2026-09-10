@@ -1,5 +1,7 @@
 import SwiftUI
 
+
+// STEAL YYYYESSSS
 /// BlurHash placeholder support.
 ///
 /// Jellyfin ships a compact BlurHash string alongside every image (see `ImageRef.blurHash`). A

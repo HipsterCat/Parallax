@@ -382,6 +382,8 @@ private struct DetailOverviewReadingPanel: View {
     .environment(\.appIdiom, .regular)
 }
 
+/// STEAL FOOTER INFO COLUMNS kinda fine
+
 // Regression guard for the no-overview wide layout: the placeholder must hold the left column so
 // the fixed ledger doesn't hug the content edge. (A title with a TAGLINE but no overview shows the
 // tagline INSTEAD of the placeholder — never both; see `overviewColumn`.)

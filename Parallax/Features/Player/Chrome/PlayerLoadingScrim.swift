@@ -174,6 +174,8 @@ private struct RingDiscParityPreview: View {
     }
 }
 
+// STEALL just in case nice player states
+
 // Phone veil at landscape-phone size: the ring ALONE, dead-center — no caption
 // (`scrimShowsCaption` is false on phone; a caption below a center-pinned ring
 // lands in the bottom scrubber band on every landscape iPhone). Any text in this

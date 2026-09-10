@@ -175,6 +175,8 @@ private let previewSearchEpisodes = [
 ///    (`focusSafeSectionGap`) — at the old hardcoded 12/18/26pt the system focus lift
 ///    (`hoverEffect(.highlight)`) on a result overlapped its neighbours and the next section's
 ///    header. A static render can't show the lift itself; what's under test is the resting gap.
+///
+///    /// STEAL search with tab/filters
 #Preview("TV grid gaps", traits: .fixedLayout(width: 1920, height: 1080)) {
     @Previewable @State var scope: SearchScope = .movies
     let movies = (1...6).map { i in

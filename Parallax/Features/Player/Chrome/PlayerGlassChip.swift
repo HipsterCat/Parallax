@@ -1,5 +1,7 @@
 import SwiftUI
 
+
+// STEAL WORTH A LOOK buttons for hero or player with label, nice
 /// Pill control for Audio / Subtitles / Speed / Chapters. Liquid Glass off-state with
 /// a white hairline; solid-white on-state with dark ink label (the active/menu-open
 /// look). All sizes scale via `metrics`. `tvChipButton()` supplies the tvOS focus lift

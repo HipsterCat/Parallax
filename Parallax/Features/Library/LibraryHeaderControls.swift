@@ -1,6 +1,10 @@
 import SwiftUI
 import ParallaxCore
 
+
+
+// STEAL genres sorting controls, liquid glass chips for toolbar
+
 /// Capsule metrics for the ONE placeholder the live header still draws itself: the Genre slot while
 /// genres are in flight (`genreSlot` below). It's a hand-sized stand-in for a control that doesn't
 /// exist yet — the genre list decides the Menu's label, so there is nothing to measure — and it's

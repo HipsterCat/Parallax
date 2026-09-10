@@ -1,5 +1,7 @@
 import SwiftUI
 
+
+// STEAL maybe... nice player glass buttons 
 /// Circular glass control (Close, ±10s skip, play/pause, PiP, AirPlay frame) —
 /// ONE material for the whole transport: the shared over-video glass. Play/pause
 /// used to be a solid-white "primary" platter (the tvOS focused-platter look
