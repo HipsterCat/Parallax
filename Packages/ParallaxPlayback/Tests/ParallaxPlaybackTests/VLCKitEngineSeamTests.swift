@@ -147,9 +147,9 @@ struct VLCKitLibraryOptionTests {
 
     /// The fix. The freetype renderer belongs to the video output, so its whole option set has
     /// to arrive as libvlc instance arguments — `--`, not `:`. `.opaqueBox` is the other half
-    /// of the user's background choice: box on, shadow off.
+    /// of the user's background choice: box on, ring off.
     @Test("the font family and the style become the `--freetype-*` argument set",
-          arguments: [SubtitleBackground.shadow, .opaqueBox])
+          arguments: [SubtitleBackground.outline, .opaqueBox])
     func freetypeArgumentsCarryTheAssetStyle(background: SubtitleBackground) {
         let boxed = background == .opaqueBox
         let style = SubtitleStyle.standard.with { $0.background = background }
@@ -162,23 +162,39 @@ struct VLCKitLibraryOptionTests {
             "--freetype-font=Noto Sans CJK SC",
             // em = output height / 20 — the divisor the app computed from its own cue size.
             "--freetype-rel-fontsize=20",
+            // Sans keeps freetype's own weight; the serif design asks for bold.
+            "--no-freetype-bold",
             // 0.92 white, fully opaque.
             "--freetype-color=15461355",     // 0xEBEBEB
             "--freetype-opacity=255",
-            // The ring is never visible (opacity 0) but its thickness is never 0 outside
-            // the box: the module copies the STROKE into the shadow, so a 0 stroke is an
-            // empty shadow. 3 is a whole percent of the font size, not one of the
-            // None/Thin/Normal/Thick presets its labels suggest.
-            "--freetype-outline-opacity=0",
-            "--freetype-outline-thickness=\(boxed ? 0 : 3)",
-            // This path's own opacity and offset, chosen by eye against the client
-            // renderer's halo: 0.70 × 255 = 179, and 0.03 per axis is the hypotenuse of
-            // the module's default −45° shadow angle: 0.03 × √2 = 0.0424.
-            "--freetype-shadow-opacity=\(boxed ? 0 : 179)",
-            "--freetype-shadow-distance=0.0424",
+            // The canonical ring: opaque black, and 4 is a whole percent of the font
+            // size — not one of the None/Thin/Normal/Thick presets its labels suggest.
+            // Thickness is the only knob, so the opacity stays 255 for the box too.
+            "--freetype-outline-color=0",
+            "--freetype-outline-opacity=255",
+            "--freetype-outline-thickness=\(boxed ? 0 : 4)",
+            // No shadow on any renderer.
+            "--freetype-shadow-opacity=0",
+            "--freetype-shadow-distance=0",
             "--freetype-background-color=0",
             "--freetype-background-opacity=\(boxed ? 255 : 0)",
         ])
+    }
+
+    /// The serif design is weight 600 everywhere. freetype has no bold file to select
+    /// from the bundle, so `freetype-bold` is the request to embolden synthetically —
+    /// the VLC-side half of the client renderer's per-run `\b1`.
+    /// The sans side is pinned by the full-array test above.
+    @Test("the serif design asks freetype for bold")
+    func serifDesignAsksForBold() {
+        let style = SubtitleStyle.standard.with { $0.fontDesign = .serif }
+        let options = VLCKitEngine.libraryOptions(for: .fixture(
+            subtitleFontFamily: "Noto Serif CJK JP",
+            subtitleTextStyle: EngineSubtitleTextStyle(style: style, relativeFontSize: 20)
+        ))
+        #expect(options?.contains("--freetype-bold") == true, "\(options ?? [])")
+        // libvlc takes the last spelling it sees, so the negative must be absent too.
+        #expect(options?.contains("--no-freetype-bold") == false)
     }
 
     /// The order is load-bearing: `PlayerViewModel` compares this array against the one the

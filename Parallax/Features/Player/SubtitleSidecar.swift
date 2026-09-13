@@ -88,13 +88,18 @@ extension SubtitleStyle {
 
     /// The user's overlay style expressed as the renderer's selective override,
     /// with the caller-computed font scale and the tuned rest position as
-    /// script-unit margins. The shadow's offset and blur ride along as fractions
-    /// of the em; the renderer turns them into script units, and libass scales
-    /// them with the font scale exactly as it scales the glyphs.
+    /// script-unit margins. The canonical ring rides along as a fraction of the em;
+    /// the renderer turns it into script units, and libass scales it with the font
+    /// scale exactly as it scales the glyphs.
     ///
     /// The family stays the design bucket's own mapping, where the sans bucket
     /// has no libass name override — the synthesized script already names that
     /// family in its style.
+    ///
+    /// The serif design is weight 600 everywhere, and one style-level Bold is
+    /// all it takes: libass only synthesizes bold when the request beats the
+    /// face's own weight by a margin, so the real Noto Serif SemiBold Latin
+    /// stays as drawn and every Regular-only script face is emboldened.
     func rendererOverride(
         fontScale: Double,
         marginVertical: Double? = nil,
@@ -107,10 +112,9 @@ extension SubtitleStyle {
                 red: foreground.red, green: foreground.green,
                 blue: foreground.blue, alpha: foreground.alpha
             ),
+            bold: fontDesign == .serif,
             opaqueBox: background == .opaqueBox,
-            shadowEmRatio: Self.shadowOffsetRatio,
-            blurEmRatio: Self.shadowBlurRatio,
-            shadowAlpha: Self.shadowOpacity,
+            outlineEmRatio: Self.outlineWidthRatio,
             marginVertical: marginVertical,
             marginHorizontal: marginHorizontal
         )
@@ -126,7 +130,7 @@ extension SubtitleFontDesign {
     var rendererFamily: String? {
         switch self {
         case .sansSerif: nil
-        case .serif: SubtitleFontBundle.serifFamily
+        case .serif: SubtitleFontBundle.serifCueFamily
         }
     }
 

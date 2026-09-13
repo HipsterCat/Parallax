@@ -56,7 +56,7 @@ struct SRTToASSConverterTests {
 
     @Test("inline markup maps to ASS override tags", arguments: [
         ("italic", "<i>Hi</i>", "{\\i1}Hi{\\i0}"),
-        ("bold", "<b>Hi</b>", "{\\b1}Hi{\\b0}"),
+        ("bold", "<b>Hi</b>", "{\\b1}Hi{\\b}"),
         ("underline", "<u>Hi</u>", "{\\u1}Hi{\\u0}"),
         ("uppercase tags", "<I>Hi</I>", "{\\i1}Hi{\\i0}"),
         ("font tags are dropped, text survives", "<font color=\"#ff0000\">Hi</font>", "Hi"),
@@ -161,11 +161,11 @@ struct SRTToASSConverterTests {
         #expect(generated.contains("PlayResX: 1280"))
         #expect(generated.contains("PlayResY: 720"))
         #expect(generated.contains("Style: Default,Avenir Next,48,"))
-        // No ring (a transparent OutlineColour behind Outline 0), an 80% black offset
+        // An opaque black ring (BorderStyle 1, Outline 1.92 = 4% of the em) with no
         // shadow, bottom-centre alignment — a converted track looks like normal
         // subtitles even before an override reaches it.
-        #expect(generated.contains(",&H00FFFFFF,&H000000FF,&HFF000000,&H33000000,"))
-        #expect(generated.contains(",1,0,1.44,2,40,40,36,1"))
+        #expect(generated.contains(",&H00FFFFFF,&H000000FF,&H00000000,&H00000000,"))
+        #expect(generated.contains(",1,1.92,0,2,40,40,36,1"))
     }
 
     /// A comma in the font name would shift every later field of the style line.
