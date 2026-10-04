@@ -7,15 +7,14 @@ import ParallaxCore
 ///
 /// The fixed AVPlayer whitelist (codecs, containers, resolution, bitrate) is
 /// sourced from `PlaybackCapabilityMatrix` — a single declaration shared with
-/// `EngineSelector`. Only `hdr` and `audioOutput` are probed via the injected
-/// `CapabilityProbe` so that `ParallaxPlayback` stays free of iOS-only APIs.
+/// `EngineSelector`. Only `hdr` is probed via the injected `CapabilityProbe` so
+/// that `ParallaxPlayback` stays free of iOS-only APIs.
 ///
 /// `build()` caches the result after the first probe; `invalidate()` clears
-/// the cache so the next `build()` re-probes. The app target invalidates on
-/// three triggers — an audio route change, a network-constraint change
-/// (`setNetworkConstrained`, below), and an HDR-eligibility change — and each
-/// time the new profile is used on the next `PlaybackInfoService.resolve(...)`
-/// call.
+/// the cache so the next `build()` re-probes. The cache is dropped on two
+/// triggers — a network-constraint change (`setNetworkConstrained`, below) and
+/// an HDR-eligibility change — and each time the new profile is used on the
+/// next `PlaybackInfoService.resolve(...)` call.
 public actor DeviceProfileBuilder {
     /// Unclamped LAN ceiling serialized into the wire profile — above UHD-BD's ~144 Mbps
     /// so it never forces a bitrate transcode (nil would mean Jellyfin's 8 Mbps default).
@@ -23,19 +22,6 @@ public actor DeviceProfileBuilder {
     /// Low Data Mode clamp — Jellyfin's own capped-client default, known to produce a
     /// good 1080p transcode.
     public static let lowDataBitrateCeiling: Bitrate = .megabits(8)
-
-    /// Gate on advertising the VLC direct-play tier to Jellyfin servers.
-    ///
-    /// The VLC backend is not yet hardened for unattended use (player-teardown
-    /// crash, resume starting at 0:00), so the wire profile must not invite
-    /// servers to deliver raw VLC-only sources (VC-1, AVI, …); with the tier
-    /// withheld they transcode to HLS and play via AVKit instead. Flip when the
-    /// VLC bring-up lands.
-    ///
-    /// Deliberately scoped to the Jellyfin advertisement: `EngineSelector`'s
-    /// SMB routing stays untouched because VLC is the only engine that can open
-    /// non-AVKit SMB files and there is no server there to transcode them.
-    public static let advertisesVLCDirectPlay = false
 
     private let probe: any CapabilityProbe
     private var cached: DeviceCapabilities?
@@ -52,8 +38,7 @@ public actor DeviceProfileBuilder {
     /// until `invalidate()` is called.
     public func build() async -> DeviceCapabilities {
         if let cached { return cached }
-        let hdr = await probe.hdrSupport()           // hops to @MainActor, then returns
-        let audioOutput = probe.audioOutput()
+        let hdr = probe.hdrSupport()
         let caps = DeviceCapabilities(
             supportedVideoCodecs: PlaybackCapabilityMatrix.avKitVideoCodecs
                 .sorted(by: { $0.rawValue < $1.rawValue }),
@@ -70,28 +55,21 @@ public actor DeviceProfileBuilder {
             // default, known to produce a good 1080p transcode. `isExpensive` is deliberately
             // not consulted; cellular/hotspot alone isn't a reason to throttle.
             maxBitrate: networkConstrained ? Self.lowDataBitrateCeiling : Self.lanBitrateCeiling,
-            audioOutput: audioOutput,
             preferredSubtitleFormats: PlaybackCapabilityMatrix.avKitSubtitleFormats
                 .sorted(by: { $0.rawValue < $1.rawValue }),
-            softwareVideoCodecs: Self.advertisesVLCDirectPlay
-                ? PlaybackCapabilityMatrix.softwareVideoCodecs
-                    .sorted(by: { $0.rawValue < $1.rawValue })
-                : [],
-            softwareAudioCodecs: Self.advertisesVLCDirectPlay
-                ? PlaybackCapabilityMatrix.softwareAudioCodecs
-                    .sorted(by: { $0.rawValue < $1.rawValue })
-                : [],
-            softwareContainers: Self.advertisesVLCDirectPlay
-                ? PlaybackCapabilityMatrix.softwareContainers
-                    .sorted(by: { $0.rawValue < $1.rawValue })
-                : []
+            softwareVideoCodecs: PlaybackCapabilityMatrix.softwareVideoCodecs
+                .sorted(by: { $0.rawValue < $1.rawValue }),
+            softwareAudioCodecs: PlaybackCapabilityMatrix.softwareAudioCodecs
+                .sorted(by: { $0.rawValue < $1.rawValue }),
+            softwareContainers: PlaybackCapabilityMatrix.softwareContainers
+                .sorted(by: { $0.rawValue < $1.rawValue })
         )
         cached = caps
         return caps
     }
 
     /// Clears the cached `DeviceCapabilities`, forcing a re-probe on the
-    /// next `build()` call. Call this when the audio route changes.
+    /// next `build()` call. Call this when HDR eligibility changes.
     public func invalidate() {
         cached = nil
     }

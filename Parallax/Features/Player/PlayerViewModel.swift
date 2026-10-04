@@ -90,13 +90,10 @@ final class PlayerViewModel {
     var isPiPAvailable: Bool { engine?.capabilities.supportsPiP ?? false }
     var isVideoAirPlayAvailable: Bool { engine?.capabilities.supportsVideoAirPlay ?? false }
 
-    /// PiP start/stop actions, pushed up from the video host once its
-    /// PiP controller is ready (AVKit: `onPiPReady`; VLC: `VLCPictureInPictureDrawable`).
-    /// Nil until a host mounts — so `startPiP()`/`stopPiP()` are safe no-ops in tests.
+    /// PiP start action, pushed up from the AVKit video host (`onPiPReady`) once its PiP
+    /// controller is ready. Nil until a host mounts, so `startPiP()` is a safe no-op in tests.
     var startPiPAction: (@MainActor () -> Void)?
-    var stopPiPAction: (@MainActor () -> Void)?
     func startPiP() { startPiPAction?() }
-    func stopPiP() { stopPiPAction?() }
 
     /// Freeze/unfreeze the video surface's last frame, pushed up from the video host
     /// (`onFreezeReady`) like the PiP actions, and nil until a host mounts, so both are
@@ -565,10 +562,11 @@ final class PlayerViewModel {
         await commitSeek(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
 
-    /// Optimistic transport toggle from the play/pause button. Flips to the opposite of the
-    /// user's INTENT (`desiredPlaying`), never the engine mirror: inside the mirror's lag
-    /// window (wmv/VLC settles for seconds) `isPlaying` can still read the pre-command value,
-    /// so toggling off it did the exact opposite of what the press asked for.
+    /// Optimistic transport toggle from the play/pause button and the remote (headset, Now
+    /// Playing) toggle command. Flips to the opposite of the user's INTENT (`desiredPlaying`),
+    /// never the engine mirror or the Now Playing rate: inside the mirror's lag window
+    /// (wmv/VLC settles for seconds) both can still read the pre-command value, so toggling
+    /// off them did the exact opposite of what the press asked for.
     func togglePlayPause() {
         setPlaying(!desiredPlaying)
     }
@@ -708,8 +706,8 @@ final class PlayerViewModel {
     /// Probes the live transcode's copy-vs-reencode delivery (`TranscodeDelivery`)
     /// by play-session id. Defaulted to a nil-returning no-op so SMB, previews, and
     /// tests that don't care need no wiring; the Jellyfin path injects
-    /// `PlaybackInfoService.transcodingDelivery`. Nil = ffmpeg hasn't started / no
-    /// matching session yet — the probe treats it as "ask again".
+    /// `PlaybackInfoService.transcodingDelivery`. Nil = ffmpeg hasn't started, no
+    /// matching session yet, or the probe failed — the probe treats it as "ask again".
     private let fetchDelivery: @Sendable (String) async -> TranscodeDelivery?
     /// Wait-then-fetch schedule for the delivery probe: one sleep+fetch per entry, in
     /// order, until a non-nil result lands or the schedule runs out. Production waits
@@ -1849,7 +1847,8 @@ final class PlayerViewModel {
                 // Route through setPlaying (not engine.play/pause directly) so a remote command
                 // clears any pending scrub latch — otherwise it's swallowed and the glyph sticks.
                 onPlay: { [weak self] in self?.setPlaying(true) },
-                onPause: { [weak self] in self?.setPlaying(false) }
+                onPause: { [weak self] in self?.setPlaying(false) },
+                onToggle: { [weak self] in self?.togglePlayPause() }
             )
         }
 
@@ -3784,11 +3783,6 @@ final class PlayerViewModel {
             // retry. Still fenced while exiting, where the freeze is the dismissal's, not
             // this session's.
             unfreezeVideoSurface()
-            // …and any seek hold, for the same reason: a failed session emits no further
-            // position beat, so nothing else would ever hand the bar back. The error scrim
-            // owns the screen from here; a target pinned under it would survive into the
-            // retry as a resume point nothing ever played.
-            seekHold = nil
             phase = .failed(Self.map(error))
         }
     }
@@ -4374,6 +4368,5 @@ extension PlayerViewModel {
 private struct PreviewAudioSession: AudioSessionControlling {
     func activate() async throws {}
     func deactivate() async {}
-    let routeChanges = AsyncStream<Void> { _ in }
 }
 #endif

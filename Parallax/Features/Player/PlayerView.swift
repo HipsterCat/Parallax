@@ -190,7 +190,8 @@ struct PlayerView: View {
         // The iPhone player follows the device: presenting it widens the mask to
         // portrait+landscape so the physical orientation drives the rotation (no-op on
         // iPad, which plays any way up). The rotate button forces a side on top of that;
-        // the teardown below narrows back to the portrait browse default.
+        // `PlayerPresentationHost.sync` narrows back to the portrait browse default when
+        // the dismissal begins.
         .onAppear { OrientationController.shared.beginPlayerPresentation() }
         #endif
         .onDisappear {
@@ -208,13 +209,6 @@ struct PlayerView: View {
             landingLinger = false
             clickSeekCoalescer.cancel()
             DisplayCriteriaMatcher.clear()
-            #else
-            // Backstop only: the presentation host already ended the presentation when the
-            // dismissal began (rotating back mid-slide instead of snapping after it —
-            // see `PlayerPresentationHost.sync`). This idempotent re-call covers unmounts
-            // that never flipped the request (server switch tearing the player down
-            // structurally).
-            OrientationController.shared.endPlayerPresentation()
             #endif
         }
         // A movie / series finale that played to its end dismisses the player the same
@@ -319,10 +313,7 @@ struct PlayerView: View {
             rememberTrackSelection: { await info.rememberTrackSelection($0) },
             fetchSegments: { (try? await repo.mediaSegments(for: $0)) ?? [] },
             fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none },
-            // Copy-vs-reencode probe: a thrown transport error and "no session yet"
-            // both collapse to nil (the VM's probe retries, then gives up) — the seek
-            // strategy stays conservative on nil regardless.
-            fetchDelivery: { (try? await info.transcodingDelivery(playSessionID: $0)) ?? nil },
+            fetchDelivery: { await info.transcodingDelivery(playSessionID: $0) },
             subtitleStyle: subtitleStyleProvider,
             playerSurface: playerSurfaceProvider,
             // Poster bytes for the scrub bar's accent hue. Through the session's own image
@@ -573,9 +564,8 @@ struct PlayerView: View {
         if let engine = vm.engine {
             switch engine.id {
             case .avKit:
-                AVKitVideoLayerHost(engine: engine, onPiPReady: { start, stop in
+                AVKitVideoLayerHost(engine: engine, onPiPReady: { start in
                     vm.startPiPAction = start
-                    vm.stopPiPAction = stop
                 }, onFreezeReady: { freeze, unfreeze in
                     vm.freezeSurfaceAction = freeze
                     vm.unfreezeSurfaceAction = unfreeze

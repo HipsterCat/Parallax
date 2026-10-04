@@ -21,9 +21,6 @@ struct LoginView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var viewModel: LoginViewModel?
-    /// Incremented on Connect; `CredentialRowList` releases any stale hidden-field first responder
-    /// when it moves (tvOS-only effect — see the sweep rationale there).
-    @State private var fieldSweep = 0
     #if !os(tvOS)
     @State private var showPassword = false
     /// Drives the return-key field walk: return advances to the next field, and "go" on the last
@@ -147,14 +144,11 @@ struct LoginView: View {
             // Field stack — tvOS uses the Settings-style row list (rows → single-field keyboard screen);
             // iOS uses the inset-grouped fields. See `CredentialRowList` for why the inline tvOS field is avoided.
             #if os(tvOS)
-            // `sweepToken` mirrors SMBLoginView: bumped on Connect so any hidden credential field
-            // tvOS retained as first responder is released before the sign-in — a stale first
-            // responder can swallow the remote's Menu press (the add-SMB freeze's parallel path).
             CredentialRowList(rows: [
                 CredentialRow(id: "server", title: "Server", placeholder: "https://jellyfin.example.com", text: $vm.serverURLInput, keyboard: .URL, textContentType: .URL),
                 CredentialRow(id: "username", title: "Username", placeholder: "Username", text: $vm.username, textContentType: .username),
                 CredentialRow(id: "password", title: "Password", placeholder: "Password", text: $vm.password, isSecure: true, textContentType: .password),
-            ], sweepToken: fieldSweep)
+            ])
             #else
             SettingsGroup(title: "Server") {
                 CredentialFieldRow(icon: "globe") {
@@ -199,7 +193,6 @@ struct LoginView: View {
             // Connect (solid primary) — needs a server and a username; passwordless Jellyfin
             // accounts are valid, so the password field is not part of the gate.
             Button {
-                fieldSweep += 1
                 Task { await submitSignIn(vm: vm) }
             } label: {
                 Text("Connect").formActionLabel(isWorking: vm.isWorking)

@@ -93,6 +93,25 @@ struct VLCKitDisplayClockTests {
     }
 }
 
+@Suite("VLCKitEngine — seek guard")
+@MainActor
+struct VLCKitSeekGuardTests {
+
+    /// A non-finite target must be dropped before it can be turned into a millisecond offset.
+    @Test("seek with a non-finite CMTime never reaches the player",
+          arguments: [CMTime.invalid, .indefinite, .positiveInfinity, .negativeInfinity])
+    func seekNonFiniteIsANoOp(time: CMTime) async throws {
+        let spy = SpyVLCPlayer()
+        let engine = VLCKitEngine(control: spy)
+        try await engine.load(.fixture())
+
+        await engine.seek(to: time)
+
+        #expect(spy.seekWritesMs.isEmpty)
+        await engine.teardown()
+    }
+}
+
 @Suite("VLCKitEngine — media options")
 struct VLCKitMediaOptionTests {
 
@@ -195,21 +214,6 @@ struct VLCKitLibraryOptionTests {
         #expect(options?.contains("--freetype-bold") == true, "\(options ?? [])")
         // libvlc takes the last spelling it sees, so the negative must be absent too.
         #expect(options?.contains("--no-freetype-bold") == false)
-    }
-
-    /// The order is load-bearing: `PlayerViewModel` compares this array against the one the
-    /// live engine was built with to decide whether it can reuse the player, so equal inputs
-    /// must produce an equal array rather than merely an equal SET.
-    @Test("equal assets produce an identical array, element for element")
-    func orderingIsStable() {
-        func build() -> [String]? {
-            VLCKitEngine.libraryOptions(for: .fixture(
-                subtitleFontFamily: "Noto Serif CJK JP",
-                subtitleTextStyle: EngineSubtitleTextStyle(style: .standard, relativeFontSize: 18),
-                vlcLibraryOptions: ["--no-drop-late-frames"]
-            ))
-        }
-        #expect(build() == build())
     }
 
     /// The pre-existing instance arguments (the timing-repair vout flags) keep their place at
@@ -491,6 +495,39 @@ struct VLCKitTeardownTests {
         await engine.teardown()
     }
 
+    /// `teardown()` drives the same non-Sendable `VLCMediaPlayer` the exit stop is still
+    /// winding down (drawable → delegate → stop). It joins first, or the two run concurrently
+    /// on two threads, the shape libvlc's own teardown aborts on.
+    @Test("teardown joins endAudio's detached stop before it touches the player")
+    func teardownJoinsPendingStop() async throws {
+        let spy = SpyVLCPlayer()
+        spy.holdStops()
+        spy.drawable = NSObject()
+        let engine = VLCKitEngine(control: spy)
+        await engine.endAudio()          // stop A, parked in the spy's gate
+
+        // The task shares the engine's actor, so once it has entered `teardown()` the whole
+        // synchronous prefix has run: a join-skipping teardown has already reached the player.
+        // Yield rather than sleep: stop A holds a cooperative thread, and a sleeper needs a free
+        // one to wake, which a small CI pool may not have while other suites hold stops too.
+        final class Entered { var value = false }
+        let entered = Entered()
+        let teardown = Task {
+            entered.value = true
+            await engine.teardown()
+        }
+        while !entered.value { await Task.yield() }
+        #expect(spy.drawable != nil, "teardown detached the drawable while stop A was still running")
+        #expect(spy.stopCalls == 0)
+
+        spy.stopHolding()
+        spy.releaseHeldStop()            // a teardown that skipped the join parks a second stop
+        await teardown.value
+        #expect(spy.drawable == nil)
+        #expect(spy.stopCalls == 2)
+        #expect(engine.pendingStopTask == nil)
+    }
+
     /// The latch belongs to the session, not the engine: the transcode reload reuses one
     /// engine, so `load()` has to hand the player back.
     @Test("load() lowers the wind-down latch so a reused engine still takes commands")
@@ -551,13 +588,6 @@ struct VLCKitEventsConfigurationTests {
     func makePlayerInstallsTheEventsConfiguration() {
         _ = VLCKitEngine.makePlayer(libraryOptions: nil)
         #expect(VLCLibrary.sharedEventsConfiguration is VLCEventsLegacyConfiguration)
-    }
-
-    @Test("constructing an engine leaves the events configuration installed")
-    func constructionLeavesTheEventsConfigurationInstalled() async {
-        let engine = VLCKitEngine(control: SpyVLCPlayer())
-        #expect(VLCLibrary.sharedEventsConfiguration is VLCEventsLegacyConfiguration)
-        await engine.teardown()
     }
 }
 
@@ -844,7 +874,55 @@ struct VLCKitSeekSettleTests {
         let paused = try #require(log.from(60).last)
         #expect(paused.seconds == 60)
         #expect(paused.provenance == .projected)
+        #expect(log.from(60).map(\.seconds) == [60, 60])
 
+        log.stop()
+        await engine.teardown()
+    }
+}
+
+/// The load deadline only means something if nothing disarms it before the input opens. The
+/// poll's inventory diff used to publish the empty inventory of an input still stuck opening
+/// on its first tick, and that `.ready` disarmed the watchdog: a dead share spun forever.
+@Suite("VLCKitEngine — load readiness", .timeLimit(.minutes(1)))
+@MainActor
+struct VLCKitLoadReadinessTests {
+
+    @Test("an input has opened once it offers a track or a length",
+          arguments: [
+            (TrackInventory.empty, false, false),
+            (TrackInventory.empty, true, true),
+            (TrackInventory(audio: [AudioTrack(id: .vlc("1"), displayName: "English", languageCode: nil)],
+                            subtitles: []), false, true),
+            (TrackInventory(audio: [],
+                            subtitles: [SubtitleTrack(id: .vlc("2"), displayName: "English",
+                                                      languageCode: nil, isForced: false)]),
+             false, true),
+          ])
+    func inputHasOpened(inventory: TrackInventory, lengthResolved: Bool, expected: Bool) {
+        #expect(VLCKitEngine.inputHasOpened(inventory: inventory, lengthResolved: lengthResolved) == expected)
+    }
+
+    @Test("the load watchdog fires only on an input that never opened", arguments: [false, true])
+    func loadWatchdogFiresOnlyOnAHungOpen(opens: Bool) async throws {
+        let spy = SpyVLCPlayer()
+        spy.stubbedState = .opening
+        spy.demuxBytesPerPoll = 1   // counts polls; no clock, so it reads as no beat at all
+        if opens {
+            spy.stubbedAudioTrackIndexes = [NSNumber(value: 1)]
+            spy.stubbedAudioTrackNames = ["English"]
+        }
+        let engine = VLCKitEngine(control: spy, loadDeadline: .seconds(1))
+        let log = PositionBeatLog(engine)
+        try await engine.load(.fixture())
+        await engine.play()
+
+        // Six polls is three seconds of poll sleep against a one-second deadline.
+        try await pollUntil({ log.failure != nil || spy.stubbedDemuxReadBytes >= 6 },
+                            timeout: CITimeScale.seconds(20))
+
+        #expect(log.failure == (opens ? nil : .loadTimedOut))
+        #expect(log.readyInventories.map { $0.audio.map(\.id) } == (opens ? [[.vlc("1")]] : []))
         log.stop()
         await engine.teardown()
     }

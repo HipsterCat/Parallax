@@ -7,7 +7,7 @@ import ParallaxPlaybackTestSupport
 @Suite("DeviceProfileBuilder")
 struct DeviceProfileBuilderTests {
 
-    /// The profile a default (no-HDR, stereo) device produces — the shape 12 of these
+    /// The profile a default (no-HDR) device produces — the shape 12 of these
     /// tests need before they can look at one field.
     private func defaultCaps() async -> DeviceCapabilities {
         await DeviceProfileBuilder(probe: FakeCapabilityProbe()).build()
@@ -28,17 +28,17 @@ struct DeviceProfileBuilderTests {
         #expect(Set(caps.preferredSubtitleFormats) == PlaybackCapabilityMatrix.avKitSubtitleFormats)
     }
 
-    /// Release gate: while `advertisesVLCDirectPlay` is off, the wire profile
-    /// must carry no VLC tier — `DeviceProfileTranslator` omits the tier when
-    /// `softwareVideoCodecs` is empty, so servers transcode VLC-only sources
-    /// instead of delivering them raw to the unhardened backend.
-    @Test("build() withholds the VLC software tier while the gate is closed")
-    func softwareTierWithheldWhileGateClosed() async {
+    /// The VLC tier rides the wire profile so servers direct-play VLC-only sources
+    /// instead of transcoding them. `DeviceProfileTranslator` drops the tier when
+    /// `softwareVideoCodecs` is empty, so an empty list here would silently force
+    /// every such source back through a transcode.
+    @Test("build() serializes the matrix's VLC software tier into the profile")
+    func softwareTierComesFromTheMatrix() async {
         let caps = await defaultCaps()
-        #expect(!DeviceProfileBuilder.advertisesVLCDirectPlay)
-        #expect(caps.softwareVideoCodecs.isEmpty)
-        #expect(caps.softwareAudioCodecs.isEmpty)
-        #expect(caps.softwareContainers.isEmpty)
+        #expect(Set(caps.softwareVideoCodecs) == PlaybackCapabilityMatrix.softwareVideoCodecs)
+        #expect(Set(caps.softwareAudioCodecs) == PlaybackCapabilityMatrix.softwareAudioCodecs)
+        #expect(Set(caps.softwareContainers) == PlaybackCapabilityMatrix.softwareContainers)
+        #expect(!caps.softwareVideoCodecs.isEmpty)
     }
 
     @Test("build() declares a 4K UHD ceiling")
@@ -51,23 +51,12 @@ struct DeviceProfileBuilderTests {
     @Test("build() propagates the probe's HDR support", arguments: [
         HDRSupport.none,
         HDRSupport.hdr10,
+        HDRSupport.dolbyVision,
         HDRSupport([.hdr10, .dolbyVision]),
-        HDRSupport([.hdr10, .hdr10Plus, .dolbyVision]),
     ])
     func hdrPropagates(hdr: HDRSupport) async {
         let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: hdr))
         #expect(await builder.build().hdr == hdr)
-    }
-
-    @Test("build() propagates the probe's audio output", arguments: [
-        AudioOutputCapability.stereo,
-        .multichannel(channelCount: 6),
-        .multichannel(channelCount: 8),
-        .atmos,
-    ])
-    func audioOutputPropagates(output: AudioOutputCapability) async {
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(audioOutput: output))
-        #expect(await builder.build().audioOutput == output)
     }
 
     // MARK: — Caching + invalidation
@@ -78,7 +67,7 @@ struct DeviceProfileBuilderTests {
         let builder = DeviceProfileBuilder(probe: probe)
         _ = await builder.build()
         _ = await builder.build()
-        let count = await probe.callCount
+        let count = probe.callCount
         #expect(count == 1, "expected the probe to run once (cached), got \(count)")
     }
 
@@ -89,7 +78,7 @@ struct DeviceProfileBuilderTests {
         _ = await builder.build()
         await builder.invalidate()
         _ = await builder.build()
-        let count = await probe.callCount
+        let count = probe.callCount
         #expect(count == 2, "expected a re-probe after invalidate, got \(count)")
     }
 
@@ -109,7 +98,7 @@ struct DeviceProfileBuilderTests {
     /// would keep asking the server for 360 Mbps.
     @Test("the Low Data ceiling is genuinely lower than the LAN ceiling")
     func ceilingsDiffer() {
-        #expect(DeviceProfileBuilder.lowDataBitrateCeiling < DeviceProfileBuilder.lanBitrateCeiling)
+        #expect(DeviceProfileBuilder.lowDataBitrateCeiling.rawValue < DeviceProfileBuilder.lanBitrateCeiling.rawValue)
     }
 
     @Test("a genuine constraint flip invalidates the cache")
@@ -119,7 +108,7 @@ struct DeviceProfileBuilderTests {
         _ = await builder.build()
         await builder.setNetworkConstrained(true)
         _ = await builder.build()
-        let count = await probe.callCount
+        let count = probe.callCount
         #expect(count == 2, "expected a re-probe after a real constraint change, got \(count)")
     }
 
@@ -133,7 +122,7 @@ struct DeviceProfileBuilderTests {
         _ = await builder.build()
         await builder.setNetworkConstrained(true)
         _ = await builder.build()
-        let count = await probe.callCount
+        let count = probe.callCount
         #expect(count == 1, "expected the repeat setNetworkConstrained(true) to be a no-op, got \(count)")
     }
 }

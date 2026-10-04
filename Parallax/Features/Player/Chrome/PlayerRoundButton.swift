@@ -14,17 +14,6 @@ struct PlayerRoundButton: View {
     let systemImage: String
     let size: CGFloat
     var iconScale: CGFloat = 0.46
-    /// Vertical optical correction as a fraction of the glyph point size (negative = up).
-    /// SwiftUI centers the symbol CANVAS (it honors e.g. play.fill's baked +5% rightward
-    /// optical margin — pixel-measured), but `gobackward.10`/`goforward.10` ship with NO
-    /// compensation for the arrowhead protruding above the ring, so canvas-centering
-    /// parks the visible ring ~5% of the font size low inside the disc. Callers pass
-    /// `skipGlyphYOffset` on those glyphs to center the RING; symmetric glyphs need nothing.
-    var glyphOpticalYOffset: CGFloat = 0
-    /// The 10-skip ring correction every `gobackward.10`/`goforward.10` call site passes —
-    /// one constant so the value can be retired in one place if Apple ever bakes the
-    /// compensation into the symbols (see `glyphOpticalYOffset`).
-    static let skipGlyphYOffset: CGFloat = -0.05
     /// Dim + non-interactive when false (a prev/next-episode button at a series
     /// boundary). On tvOS a disabled button is also unfocusable, so the focus engine
     /// skips it instead of stranding on a dead target.
@@ -65,14 +54,13 @@ struct PlayerRoundButton: View {
         Image(systemName: systemImage)
             .font(.system(size: size * iconScale, weight: .semibold))
             .foregroundStyle(color)
-            .offset(y: size * iconScale * glyphOpticalYOffset)
             // Play/pause glyph swaps arrive from engine beats, not taps — after a
             // drag-scrub the resume's .playing often lands mid HUD fade-in, and a
             // bare string swap cut the glyph to "pause" at full opacity while the
             // disc was still animating in. The symbol Replace keeps the swap inside
             // the motion (and animates normal play/pause toggles too). The scoped
-            // animation is keyed on the glyph name, so static-glyph buttons (skip,
-            // Close, PiP) never get a transaction out of it.
+            // animation is keyed on the glyph name, so static-glyph buttons (episode
+            // skip, Close) never get a transaction out of it.
             .contentTransition(.symbolEffect(.replace))
             .animation(.default, value: systemImage)
     }

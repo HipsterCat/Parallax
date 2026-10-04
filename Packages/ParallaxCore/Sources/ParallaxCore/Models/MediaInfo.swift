@@ -75,8 +75,8 @@ public enum ColorSpace: String, Sendable, Hashable, Codable, CaseIterable {
 }
 
 // OptionSet because a device can support several HDR formats simultaneously
-// (e.g., an iPhone 15 Pro supports HDR10, HDR10+, and Dolby Vision).
-public struct HDRSupport: OptionSet, Sendable, Hashable, Codable {
+// (e.g., an iPhone 15 Pro supports HDR10 and Dolby Vision).
+public struct HDRSupport: OptionSet, Sendable, Hashable {
     public let rawValue: Int
 
     public init(rawValue: Int) {
@@ -84,15 +84,9 @@ public struct HDRSupport: OptionSet, Sendable, Hashable, Codable {
     }
 
     public static let hdr10 = HDRSupport(rawValue: 1 << 0)
-    public static let hdr10Plus = HDRSupport(rawValue: 1 << 1)
-    public static let dolbyVision = HDRSupport(rawValue: 1 << 2)
+    public static let dolbyVision = HDRSupport(rawValue: 1 << 1)
 
     public static let none: HDRSupport = []
-    public static let both: HDRSupport = [.hdr10, .dolbyVision]
-
-    public func includes(_ other: HDRSupport) -> Bool {
-        contains(other)
-    }
 }
 
 public enum SubtitleFormat: String, Sendable, Hashable, Codable, CaseIterable {
@@ -103,7 +97,7 @@ public enum SubtitleFormat: String, Sendable, Hashable, Codable, CaseIterable {
     case vobsub       // Image-based, DVD
 }
 
-public struct Resolution: Sendable, Hashable, Codable {
+public struct Resolution: Sendable, Hashable {
     public let width: Int
     public let height: Int
 
@@ -115,10 +109,4 @@ public struct Resolution: Sendable, Hashable, Codable {
     public static let uhd4K = Resolution(width: 3840, height: 2160)
     public static let hd1080p = Resolution(width: 1920, height: 1080)
     public static let hd720p = Resolution(width: 1280, height: 720)
-}
-
-public enum AudioOutputCapability: Sendable, Hashable, Codable {
-    case stereo
-    case multichannel(channelCount: Int)
-    case atmos
 }

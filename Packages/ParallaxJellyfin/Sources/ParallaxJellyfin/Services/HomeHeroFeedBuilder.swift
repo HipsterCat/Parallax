@@ -20,8 +20,7 @@ public enum HomeHeroFeedBuilder {
         seriesByID: [String: Series],
         firstEpisodeBySeriesID: [String: Episode],
         limit: Int,
-        continueWatching: [Item] = [],
-        importWindow: TimeInterval = defaultImportWindow
+        continueWatching: [Item] = []
     ) -> [HomeHeroFeedEntry] {
         var movies: [(item: Item, date: Date)] = []
         var episodesBySeries: [String: [Episode]] = [:]
@@ -56,13 +55,14 @@ public enum HomeHeroFeedBuilder {
             let eyebrow = classifyEyebrow(
                 seriesDate: series.dateAdded,
                 episodes: episodes,
-                window: importWindow
+                window: defaultImportWindow
             )
-            let playEpisode = resolvePlayEpisode(
-                episodes: episodes,
-                eyebrow: eyebrow,
-                fallback: firstEpisodeBySeriesID[seriesID]
-            )
+            // The fetched start episode outranks the batch: a big import's Latest batch is
+            // truncated, so its earliest episode can sit mid-series.
+            let playEpisode = switch eyebrow {
+            case .newlyAdded: firstEpisodeBySeriesID[seriesID] ?? episodes.min(by: compareEpisodeOrder)!
+            case .newEpisodeAvailable: newest
+            }
             let playTarget: Item = .episode(playEpisode)
             entries.append((
                 HomeHeroFeedEntry(presentation: presentation, playTarget: playTarget, eyebrow: eyebrow),
@@ -113,25 +113,6 @@ public enum HomeHeroFeedBuilder {
             return .newlyAdded
         }
         return .newEpisodeAvailable
-    }
-
-    private static func resolvePlayEpisode(
-        episodes: [Episode],
-        eyebrow: HeroEyebrow,
-        fallback: Episode?
-    ) -> Episode {
-        if eyebrow == .newlyAdded {
-            if let first = episodes.min(by: compareEpisodeOrder) { return first }
-            if let fallback { return fallback }
-        }
-        let newest = episodes.max(by: { ($0.dateAdded ?? .distantPast) < ($1.dateAdded ?? .distantPast) })!
-        if newest.userData.isInProgress {
-            return newest
-        }
-        if eyebrow == .newEpisodeAvailable {
-            return newest
-        }
-        return episodes.min(by: compareEpisodeOrder) ?? newest
     }
 
     private static func compareEpisodeOrder(_ a: Episode, _ b: Episode) -> Bool {
@@ -190,7 +171,7 @@ public enum HomeHeroFeedBuilder {
     }
 
     /// True when `next` is S{n}E{m+1} or S{n+1}E1 immediately after `current`.
-    static func isSequentialNextUp(from current: Episode, to next: Episode) -> Bool {
+    private static func isSequentialNextUp(from current: Episode, to next: Episode) -> Bool {
         guard current.seriesID == next.seriesID else { return false }
         guard let currentSeason = current.parentIndexNumber,
               let currentIndex = current.indexNumber,

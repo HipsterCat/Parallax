@@ -95,7 +95,7 @@ struct EpisodeCaptionTests {
 struct EpisodeRuntimeTests {
     @Test("runtime rounds down to whole minutes", arguments: [
         (45 * 60, 45), (45 * 60 + 59, 45), (60, 1),
-    ])
+    ] as [(Int, Int)])
     func runtimeLengthMinutes(seconds: Int, expected: Int) {
         #expect(LibraryFixtures.episode(runtime: .seconds(seconds)).runtimeLengthMinutes == expected)
     }
@@ -168,6 +168,24 @@ struct EpisodeRuntimeTests {
             userData: LibraryFixtures.userData(positionTicks: LibraryFixtures.ticks(minutes: 23))
         )
         #expect(inProgress.shelfFooterCaption() == "S1 · E2 · 22 min left")
+    }
+
+    @Test("shelf footer and progress honor the opt-outs and a position that reached the runtime", arguments: [
+        (minutesIn: 9, showTimeRemaining: false, showRuntimeLength: true, caption: "S1 · E2 · 45 min", progress: 0.2),
+        (minutesIn: 0, showTimeRemaining: true, showRuntimeLength: false, caption: "S1 · E2", progress: nil),
+        (minutesIn: 45, showTimeRemaining: true, showRuntimeLength: true, caption: "S1 · E2", progress: 1.0),
+    ] as [(minutesIn: Int, showTimeRemaining: Bool, showRuntimeLength: Bool, caption: String, progress: Double?)])
+    func shelfFooterHonorsOptOuts(
+        minutesIn: Int, showTimeRemaining: Bool, showRuntimeLength: Bool, caption: String, progress: Double?
+    ) {
+        let episode = LibraryFixtures.episode(
+            indexNumber: 2, parentIndexNumber: 1,
+            userData: LibraryFixtures.userData(positionTicks: LibraryFixtures.ticks(minutes: minutesIn))
+        )
+        #expect(episode.shelfFooterCaption(
+            showTimeRemaining: showTimeRemaining, showRuntimeLength: showRuntimeLength
+        ) == caption)
+        #expect(episode.shelfPlaybackProgress == progress)
     }
 
     @Test("shelf footer drops to the index alone when there is no time to show")

@@ -52,6 +52,7 @@ struct SMBBrowseView: View {
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.prefersReducedResourceUsage) private var prefersReducedResourceUsage
     @State private var model: SMBBrowseViewModel?
     /// Highest media index the viewport-ahead prefetch window has covered; -1 = none yet. Monotonic
     /// per listing so scroll-back re-appearances don't re-hand items to the provider.
@@ -72,17 +73,6 @@ struct SMBBrowseView: View {
     /// Drives the pushed password-recovery form. One level at a time can be in a failure state, so
     /// only one level's binding is ever live.
     @State private var isEnteringPassword = false
-    /// Programmatic scroll handle for the wall (the iOS 18 `ScrollPosition` struct, NOT the legacy
-    /// `scrollPosition(id:)` binding this replaces). The difference is the whole bug fix: a user
-    /// scroll puts the struct into its user-driven mode and SwiftUI then never spontaneously
-    /// re-applies an identity anchor — whereas the live two-way binding was treated as
-    /// authoritative on every unrelated update, re-anchoring the wall to a tile the lazy grid had
-    /// often ALREADY RECYCLED (fast fling leaves the anchor rows behind). That reconciliation
-    /// fought the finger (the wall shifted up/down mid-scroll) and sometimes failed to locate the
-    /// recycled anchor entirely (snap back to the top). The only write here is the explicit
-    /// width-change restore below; see `SMBBrowseViewModel.visibleFolderIDs` for how the anchor
-    /// identity is tracked.
-    @State private var scrollPosition = ScrollPosition()
 
     var body: some View {
         Group {
@@ -238,24 +228,11 @@ struct SMBBrowseView: View {
         path.path.split(separator: "/").last.map(String.init) ?? path.share
     }
 
-    /// Whether a revalidate is allowed to dim + freeze this wall.
-    ///
-    /// Unlike `LibraryGridView` — whose revalidate follows a sort/filter the user just chose — the
-    /// only trigger here is the INVOLUNTARY foreground wake re-list (a sort change goes through
-    /// `load()` and the skeleton). On tvOS the modifier's `allowsHitTesting(false)` pulls focus off
-    /// whatever poster the user was on and parks it on the sort chip, losing a deep scroll position
-    /// for a refresh nobody asked for. So tvOS revalidates SILENTLY; iOS has no focus to lose and
-    /// keeps the crossfade.
-    #if os(tvOS)
-    private static let dimsOnRevalidate = false
-    #else
-    private static let dimsOnRevalidate = true
-    #endif
-
     /// Rows of thumbnails warmed BEYOND the tile that just appeared — a perception buffer, not the
     /// whole folder (explicit user policy: scroll landings should be warm, but a huge directory must
     /// not fetch wall-to-wall; un-approached items wait until the viewport nears them).
-    private static let prefetchLookaheadRows = 12
+    /// Cut to 3 rows while the system asks apps to defer non-essential prefetching.
+    private var prefetchLookaheadRows: Int { prefersReducedResourceUsage ? 3 : 12 }
 
     /// Viewport-ahead prefetch: when the media tile at `index` materialises in the lazy grid, hand
     /// the provider the next `prefetchLookaheadRows` rows' worth of items past the current watermark.
@@ -270,7 +247,7 @@ struct SMBBrowseView: View {
             prefetchedGeneration = model.listingGeneration
             prefetchedThrough = -1
         }
-        let lookahead = Self.prefetchLookaheadRows * AppLayout.landscapeGridColumns(idiom: idiom)
+        let lookahead = prefetchLookaheadRows * AppLayout.landscapeGridColumns(idiom: idiom)
         let upper = min(index + lookahead, model.media.count - 1)
         let lower = max(prefetchedThrough + 1, index + 1)
         guard lower <= upper else { return }
@@ -339,15 +316,13 @@ struct SMBBrowseView: View {
                         parentPath: path.path,
                         artworkProvider: deps.mediaArtworkProvider,
                         onMediaTileAppeared: { prefetchWindow(from: $0, model: model) },
-                        onFoldersVisibilityChanged: { model.visibleFolderIDs = $0 },
-                        onMediaVisibilityChanged: { model.visibleMediaIDs = $0 },
                         onPlay: { playback.playSMB($0, ref: path.ref) }
                     )
                     // Stale-while-revalidate dim → crossfade during a foreground re-list (shared
                     // with the library grid so the two never drift). Scoped to the grid, not the
                     // whole scroll subtree — see the comment on `sortHeader` above.
                     .staleWhileRevalidate(
-                        isRefreshing: Self.dimsOnRevalidate && model.isRefreshing,
+                        isRefreshing: model.isRefreshing,
                         reduceMotion: reduceMotion
                     )
                 }
@@ -355,18 +330,6 @@ struct SMBBrowseView: View {
             // The share ROOT keeps the tvOS tab chrome, so it takes the root-chrome bypass to rest
             // at the same y as the chrome-less pushed levels — see `mediaWallContentMargins`.
             .mediaWallContentMargins(iosVertical: Space.s12, tvRootChromeBypass: path.path.isEmpty)
-            // Programmatic scroll handle, not a live binding — see `scrollPosition` above for why
-            // the legacy `scrollPosition(id:)` form caused mid-scroll jumps. The grids'
-            // `.scrollTargetLayout()` + `onScrollTargetVisibilityChange` keep the topmost visible
-            // tile's identity recorded on the view model; the modifier below re-anchors to it when
-            // the scroll view's WIDTH changes: an iPhone landscape playback session reflows this
-            // (covered) level at landscape width and back, and a bare point offset doesn't survive
-            // the round trip — the wall came back scrolled to the top.
-            .scrollPosition($scrollPosition)
-            .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { oldWidth, newWidth in
-                guard oldWidth != newWidth, let anchor = model.scrollAnchorID else { return }
-                scrollPosition.scrollTo(id: anchor)
-            }
         }
     }
 
@@ -416,11 +379,6 @@ struct SMBBrowseGrid: View {
     /// Fired when a media tile materialises in the lazy grid (its index in `media`) — drives the
     /// owner's viewport-ahead prefetch window. Optional so previews need no prefetch plumbing.
     var onMediaTileAppeared: ((Int) -> Void)? = nil
-    /// Visible-tile identity reports from `onScrollTargetVisibilityChange`, in layout order
-    /// (topmost first): the raw material for the width-change scroll anchor (see the owner's
-    /// `.scrollPosition`). Optional so previews need none of that plumbing.
-    var onFoldersVisibilityChanged: (([SMBDirectoryEntry]) -> Void)? = nil
-    var onMediaVisibilityChanged: (([ItemID]) -> Void)? = nil
     let onPlay: (Item) -> Void
 
     @Environment(\.appIdiom) private var idiom
@@ -442,12 +400,6 @@ struct SMBBrowseGrid: View {
                             // `tvPosterButton()`, unchanged.
                             .pressableTileButton()
                         }
-                    }
-                    // Each tile is a scroll target so `onScrollTargetVisibilityChange` below can
-                    // report the topmost visible one for the width-change scroll anchor.
-                    .scrollTargetLayout()
-                    .onScrollTargetVisibilityChange(idType: SMBDirectoryEntry.self, threshold: 0) {
-                        onFoldersVisibilityChanged?($0)
                     }
                     // Each section grid is its own tvOS focus section so entering it (Down from
                     // the centered sort chip, or across the Folders→Videos boundary) diverts to
@@ -478,10 +430,6 @@ struct SMBBrowseGrid: View {
                             // prefetch window keys on.
                             .onAppear { onMediaTileAppeared?(index) }
                         }
-                    }
-                    .scrollTargetLayout()
-                    .onScrollTargetVisibilityChange(idType: ItemID.self, threshold: 0) {
-                        onMediaVisibilityChanged?($0)
                     }
                     // Same nearest-tile entry divert as the Folders grid above.
                     .tvFocusSection()
@@ -626,7 +574,8 @@ private struct SMBBrowseGridPreview: View {
                         avThumbnailer: AVThumbnailer(),
                         serverStore: ServerStore(
                             settings: SettingsStore(defaults: .standard),
-                            keychain: Keychain(service: "preview")
+                            keychain: Keychain(service: "preview"),
+                            snapshots: SnapshotStore()
                         )
                     ),
                     onPlay: { _ in }

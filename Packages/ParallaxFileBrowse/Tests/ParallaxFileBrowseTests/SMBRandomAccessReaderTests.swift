@@ -81,23 +81,25 @@ struct SMBRandomAccessReaderTests {
         #expect(world.connectedIDs.isEmpty, "an empty read must not cost a pool checkout")
     }
 
-    /// AMSMB2 today signals EOF with a short read, but the reader defensively honors an EOF-SHAPED
-    /// POSIX error the same way — and, crucially, does not taint the borrow over it.
-    @Test("an EOF-shaped POSIX error yields empty data and leaves the borrow reusable",
+    /// Genuine EOF never throws — AMSMB2 returns a short or empty read for it — so ENODATA is
+    /// AMSMB2's `unwrap()` on a context libsmb2 destroyed when the socket dropped mid-read. Swallowing
+    /// it as EOF returned the dead connection to the pool as healthy and let the thumbnail poison
+    /// guard blame the file for a truncated read.
+    @Test("a read that fails with ENODATA or ERANGE throws, flags a transport fault, and discards the borrow",
           arguments: [POSIXErrorCode.ENODATA, .ERANGE])
-    func eofShapedPOSIXErrorIsNotATaint(_ code: POSIXErrorCode) async throws {
+    func eofShapedPOSIXErrorIsARealFailure(_ code: POSIXErrorCode) async throws {
         let world = FakeSMBWorld()
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
         world.setReadOutcome(.fails(POSIXError(code)))
 
-        let data = try await reader.read(offset: 0, length: 16)
-        #expect(data.isEmpty)
+        await #expect(throws: POSIXError(code)) { _ = try await reader.read(offset: 0, length: 16) }
+        #expect(await reader.hadTransportFault == true, "a dropped connection is link evidence, not a bad file")
 
         await reader.disconnect()
-        #expect(world.disconnectedIDs.isEmpty, "an expected EOF shape must not discard the connection")
-        let reused = try await pool.checkout(fakeTarget(host: "nas", share: "Media"))
-        #expect(reused.connection.id == 0, "the clean borrow went back to the idle pool")
+        await untilSettled { world.disconnectedIDs == [0] }
+        #expect(world.disconnectedIDs == [0], "the broken connection is discarded, never pooled")
+        #expect(await pool.idleCount == 0)
     }
 
     // MARK: - fileSize
@@ -140,29 +142,6 @@ struct SMBRandomAccessReaderTests {
 
     // MARK: - Transport fault flag
 
-    @Test("a clean read leaves hadTransportFault false")
-    func cleanReadDoesNotMarkTransportFault() async throws {
-        let world = FakeSMBWorld()
-        let reader = makeReader(world: world)
-
-        _ = try await reader.read(offset: 0, length: 16)
-
-        #expect(await reader.hadTransportFault == false)
-    }
-
-    @Test("a transport-class read error flips hadTransportFault")
-    func transportClassReadMarksTransportFault() async throws {
-        let world = FakeSMBWorld()
-        let reader = makeReader(world: world)
-        world.setReadOutcome(.fails(POSIXError(.ECONNRESET)))
-
-        await #expect(throws: POSIXError.self) {
-            _ = try await reader.read(offset: 0, length: 16)
-        }
-
-        #expect(await reader.hadTransportFault == true)
-    }
-
     /// The checkout is a network phase too, and it used to sit OUTSIDE the classified region: every
     /// refused/unreachable/timed-out cold connect left the flag false, so the thumbnail poison guard
     /// blamed the file for a reachability blip. Both ops must classify their borrow.
@@ -199,7 +178,7 @@ struct SMBRandomAccessReaderTests {
         }
     }
 
-    @Test("a non-transport read error leaves hadTransportFault false")
+    @Test("a non-transport read error leaves hadTransportFault false and still discards the borrow")
     func contentLevelReadDoesNotMarkTransportFault() async throws {
         let world = FakeSMBWorld()
         let reader = makeReader(world: world)
@@ -211,6 +190,9 @@ struct SMBRandomAccessReaderTests {
         }
 
         #expect(await reader.hadTransportFault == false)
+        await reader.disconnect()
+        await untilSettled { world.disconnectedIDs == [0] }
+        #expect(world.disconnectedIDs == [0])
     }
 
     // MARK: - teardownCapturingTransportFault
@@ -298,7 +280,7 @@ struct SMBRandomAccessReaderTests {
 
         await world.operationGate.open()
         _ = try? await wedged.value
-        await untilSettled { await pool.condemnedCount == 0 }
+        await untilSettled { await pool.releasedTotal == 1 }
     }
 
     // MARK: - The taint rule
@@ -316,28 +298,6 @@ struct SMBRandomAccessReaderTests {
         let reused = try await pool.checkout(fakeTarget(host: "nas", share: "Media"))
         #expect(reused.connection.id == 0)
         #expect(world.connectedIDs == [0], "the returned connection is reused, not reconnected")
-    }
-
-    @Test("a borrow whose read threw is discarded, never handed to the next borrower")
-    func thrownReadDiscardsTheBorrow() async throws {
-        let world = FakeSMBWorld()
-        let pool = makeFakePool(world: world)
-        let reader = makeReader(world: world, pool: pool)
-        world.setReadOutcome(.fails(ReadFailure()))
-
-        await #expect(throws: ReadFailure.self) {
-            _ = try await reader.read(offset: 0, length: 16)
-        }
-        await reader.disconnect()
-        await untilSettled { world.disconnectedIDs == [0] }
-
-        #expect(world.disconnectedIDs == [0], "the tainted socket is disconnected, not pooled")
-        #expect(
-            await pool.condemnedCount == 0,
-            "the read RETURNED an error — the proven discard path owns this, not the graveyard"
-        )
-        _ = try await pool.checkout(fakeTarget(host: "nas", share: "Media"))
-        #expect(world.connectedIDs == [0, 1], "nothing idle was left to reuse — the next borrow is cold")
     }
 
     @Test("a borrow whose fileSize threw is discarded too")
@@ -368,13 +328,13 @@ struct SMBRandomAccessReaderTests {
         }
     }
 
-    /// AMSMB2's own reply timeout is a completed failure that is NOT quiet: its poll loop gave up
-    /// without dequeuing the request, so libsmb2 still owns it. `inFlightOps` is back at zero (the
-    /// call unwound), which is exactly why the old code discarded it — a graceful disconnect over a
-    /// live request. It has to condemn instead, on both teardown paths.
-    @Test("an op that hit AMSMB2's own reply timeout condemns the borrow instead of discarding it",
+    /// AMSMB2's own reply timeout leaves its request queued in libsmb2, but the call RETURNED:
+    /// `inFlightOps` is back at zero, nothing is running on the context, and every late dispatch
+    /// lands in request-owned memory. So it is an ordinary taint — discarded on both teardown paths,
+    /// never parked.
+    @Test("an op that hit AMSMB2's own reply timeout discards the borrow, never condemns it",
           arguments: [ReplyTimeoutCase.readThenDisconnect, .fileSizeThenDrain])
-    func innerTimeoutCondemnsTheBorrow(_ scenario: ReplyTimeoutCase) async throws {
+    func innerTimeoutDiscardsTheBorrow(_ scenario: ReplyTimeoutCase) async throws {
         let world = FakeSMBWorld()
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
@@ -390,19 +350,11 @@ struct SMBRandomAccessReaderTests {
             await reader.drainAndDisconnect()
         }
 
-        #expect(await pool.condemnedCount == 1, "the request is still queued in libsmb2 — park it")
-        #expect(world.disconnectedIDs.isEmpty, "no disconnect, in any mode, over a live request")
+        await untilSettled { world.disconnectedIDs == [0] }
+        #expect(world.disconnectedIDs == [0], "the timed-out borrow is disconnected, not pooled")
+        #expect(await pool.condemnedTotal == 0, "a returned call never reaches the graveyard")
         _ = try await pool.checkout(fakeTarget(host: "nas", share: "Media"))
-        #expect(world.connectedIDs == [0, 1], "the condemned connection is never handed out again")
-
-        // Nothing will ever settle this receipt, so the park is bounded by a fuse instead — otherwise
-        // every slow op leaks a socket and a server session. The op's own ceiling sizes it.
-        await world.fuse.awaitRequests(1)
-        #expect(await world.fuse.requested == [SMBAbandonedCall.releaseFuse(afterOperationTimeout: 15)])
-        await world.fuse.fire()
-        await untilSettled { await pool.condemnedCount == 0 }
-        #expect(await pool.condemnedCount == 0, "the fuse frees the plot")
-        #expect(world.disconnectedIDs.isEmpty, "…without speaking any SMB")
+        #expect(world.connectedIDs == [0, 1], "nothing idle was left to reuse — the next borrow is cold")
     }
 
     /// A long playback session's socket may be silently degraded without any op ever throwing, so
@@ -540,9 +492,9 @@ struct SMBRandomAccessReaderTests {
     }
 
     /// The deadline expiring says only one thing about the wedged read: it is STILL RUNNING. So the
-    /// borrow is condemned — parked alive, never returned to the pool and never disconnected (the
-    /// graceful teardown that used to run here is the captured crash). Releasing it waits for the
-    /// read to come back on its own.
+    /// borrow is condemned — parked alive, never returned to the pool and not disconnected while the
+    /// read runs (the graceful teardown that used to run here is the captured crash). The discard
+    /// waits for the read to come back on its own.
     @Test("a read still wedged at the drain deadline is condemned instead of disconnected")
     func drainDeadlineCondemnsAWedgedBorrow() async throws {
         let world = FakeSMBWorld()
@@ -563,14 +515,14 @@ struct SMBRandomAccessReaderTests {
         _ = try await pool.checkout(fakeTarget(host: "nas", share: "Media"))
         #expect(world.connectedIDs == [0, 1], "nothing idle was left — the next borrow is cold")
 
-        // The wedged read finally returns → the plot is freed, still without a disconnect (so the
-        // resumed read found a live connection: the use-after-free shape had nothing to occur on).
+        // The wedged read finally returns → only then is the connection discarded, so the resumed
+        // read found a live connection: the use-after-free shape had nothing to occur on.
         await world.operationGate.open()
         _ = try? await wedged.value
-        await untilSettled { await pool.condemnedCount == 0 }
+        await untilSettled { await pool.releasedTotal == 1 }
         #expect(await pool.condemnedCount == 0)
-        #expect(await pool.releasedTotal == 1, "released exactly once, by the settlement")
-        #expect(world.disconnectedIDs.isEmpty)
+        #expect(world.disconnectedIDs == [0], "discarded exactly once, by the settlement")
+        #expect(world.useAfterFreeIDs.isEmpty)
     }
 
     /// The fast teardown has the same split, and it is the one the sidecar thumbnail path takes: its
@@ -595,12 +547,12 @@ struct SMBRandomAccessReaderTests {
         _ = try await pool.checkout(fakeTarget(host: "nas", share: "Media"))
         #expect(world.connectedIDs == [0, 1], "the condemned connection is never handed out again")
 
-        // The abandoned read returns → the plot is freed, and still nothing was disconnected.
+        // The abandoned read returns → the plot is freed and only now discarded.
         await world.operationGate.open()
         _ = try? await wedged.value
-        await untilSettled { await pool.condemnedCount == 0 }
+        await untilSettled { await pool.releasedTotal == 1 }
         #expect(await pool.condemnedCount == 0, "the settled read frees the plot")
-        #expect(await pool.releasedTotal == 1, "released exactly once")
-        #expect(world.disconnectedIDs.isEmpty)
+        #expect(world.disconnectedIDs == [0], "discarded exactly once")
+        #expect(world.useAfterFreeIDs.isEmpty)
     }
 }
